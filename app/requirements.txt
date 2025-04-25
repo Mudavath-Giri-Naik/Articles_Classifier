@@ -1,0 +1,7 @@
+fastapi
+pandas
+joblib
+nltk
+python-dotenv
+requests
+uvicorn
