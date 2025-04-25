@@ -6,6 +6,7 @@ import pandas as pd
 import joblib
 import re
 import os
+import datetime
 from nltk.stem.porter import PorterStemmer
 from nltk.corpus import stopwords
 import requests
@@ -80,6 +81,11 @@ def process_csv_and_predict(df):
         if col not in df.columns:
             raise ValueError(f"Missing required column: {col}")
     df['category'] = df.apply(predict_category, axis=1)
+    
+    # Add current date to each row
+    current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    df['date'] = current_date
+
     return df
 
 def reclassify_general_articles(df, api_key):
@@ -113,7 +119,7 @@ articleId2 - Technology
 articleId3 - Society
 articleId4 - International
 
-Now analyze the following articles:\n\n"""  # truncated for brevity
+Now analyze the following articles:\n\n"""
 
     general_df = df[df['category'].str.lower() == 'general'].copy()
     if general_df.empty:
