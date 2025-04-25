@@ -1,6 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.openapi.docs import get_swagger_ui_html
+import nltk
+
+# Download stopwords if not already downloaded
+nltk.download('stopwords')
+
+from nltk.corpus import stopwords
+stop_words = set(stopwords.words('english'))
 
 import pandas as pd
 import joblib
@@ -8,7 +15,6 @@ import re
 import os
 import datetime
 from nltk.stem.porter import PorterStemmer
-from nltk.corpus import stopwords
 import requests
 import json
 from dotenv import load_dotenv
