@@ -6,3 +6,4 @@ python-dotenv
 requests
 uvicorn
 scikit-learn>=1.0.0
+python-multipart
