@@ -1,92 +1,4 @@
-# app/main.py
-
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.openapi.docs import get_swagger_ui_html
-import nltk
-import pandas as pd
-import joblib
-import re
-import os
-import datetime
-import requests
-import json
-from dotenv import load_dotenv
-from nltk.corpus import stopwords
-from nltk.stem.porter import PorterStemmer
-
-from .config import get_api_key
-
-nltk.download('stopwords')
-
-app = FastAPI(
-    title="Article Category Classifier API",
-    description="Upload a CSV of articles and get them auto-tagged using ML + Gemini",
-    version="1.0.0",
-    docs_url=None
-)
-
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui():
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title="Article Classifier",
-        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.js",
-        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css"
-    )
-
-model = joblib.load('./app/models/svm_model_1.pkl')
-vc = joblib.load('./app/models/vectorizer_1.pkl')
-
-ps = PorterStemmer()
-stop_words = set(stopwords.words('english'))
-
-def val_to_category(val):
-    category_map = {
-        0: 'sports',
-        1: 'business',
-        2: 'entertainment',
-        3: 'education',
-        4: 'technology'
-    }
-    return category_map.get(val, "general")
-
-def preprocess_text(text):
-    cleaned = re.sub('[^a-zA-Z]', ' ', text)
-    cleaned = cleaned.lower().split()
-    cleaned = [ps.stem(word) for word in cleaned if word not in stop_words]
-    return " ".join(cleaned)
-
-def predict_category(row, threshold=0.90):
-    combined_text = f"{row['title']} {row['present']}"
-    processed_text = preprocess_text(combined_text)
-    vector = vc.transform([processed_text])
-    if hasattr(model, "predict_proba"):
-        probabilities = model.predict_proba(vector)[0]
-        max_prob = max(probabilities)
-        predicted_index = probabilities.argmax()
-        if max_prob >= threshold:
-            return val_to_category(predicted_index)
-        else:
-            return "general"
-    else:
-        predicted_index = model.predict(vector)[0]
-        return val_to_category(predicted_index)
-
-def process_csv_and_predict(df):
-    required_columns = ['articleId', 'title', 'involvement', 'past', 'present', 'points', 'glossary']
-    for col in required_columns:
-        if col not in df.columns:
-            raise ValueError(f"Missing required column: {col}")
-
-    df['category'] = df.apply(predict_category, axis=1)
-    df['date'] = datetime.datetime.now().strftime("%Y-%m-%d")
-    return df
-
-def reclassify_general_and_predict_exam_specific(df, api_key):
-    GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-
-    prompt_intro = """Given a list of articles with their content, do two things:
+prompt_intro = """Given a list of articles with their content, do two things:
 
 1. Assign the correct tag for each article from this list of tags:
 [Governance, Economy, Society, Culture, Environment, Technology, Security, Ethics, International, Essay, Entertainment, Sports, Crime, Politics, Lifestyle, Business, Popculture, Local]
@@ -128,55 +40,17 @@ Example:
 Now here are the articles:\n\n"""
 
 
-    general_df = df[df['category'].str.lower() == 'general'].copy()
-    if general_df.empty:
-        df['examSpecific'] = False
-        return df
 
-    article_prompts = ""
-    for _, row in general_df.iterrows():
-        content = f"{row['articleId']} - {row['title']} {row['present']}".strip()
-        article_prompts += content + "\n"
 
-    final_prompt = prompt_intro + article_prompts
 
-    payload = {
-        "contents": [{"parts": [{"text": final_prompt}]}]
-    }
 
-    response = requests.post(GEMINI_API_URL, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
 
-    if response.status_code != 200:
-        raise Exception(f"API Error {response.status_code}: {response.text}")
 
-    response_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-    tag_map = {}
-    exam_specific_map = {}
 
-    for line in response_text.strip().split("\n"):
-        if " - " in line:
-            parts = line.strip().split(" - ")
-            if len(parts) == 3:
-                aid, tag, exam_specific = parts
-                tag_map[aid.strip()] = tag.strip()
-                exam_specific_map[aid.strip()] = exam_specific.strip().lower() == "true"
 
-    df['examSpecific'] = False  # Default value
-    for idx, row in df[df['category'].str.lower() == 'general'].iterrows():
-        updated_tag = tag_map.get(str(row['articleId']))
-        exam_specific_flag = exam_specific_map.get(str(row['articleId']), False)
-        if updated_tag:
-            df.at[idx, 'category'] = updated_tag
-        df.at[idx, 'examSpecific'] = exam_specific_flag
-
-    return df
-
-def deep_analysis_for_exam_specific(df, api_key):
-    GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-
-    detailed_prompt_intro = """
+detailed_prompt_intro = """
 Given the following article, provide a detailed JSON output with the following fields. Each field should contain **clear, simple, and detailed explanations**, no matter how long it may be. Use simple words that anyone can understand. The AI should explain everything thoroughly for each section, and only include relevant data. If some sections do not apply to the article, those sections should be omitted, but make sure the explanation is as clear as possible for the included sections.
-NOTE: If any section in the response is not relevant to the article or topic being summarized, or if the information is not available, simply remove that section from the final JSON output. Do not include empty or irrelevant sections. Ensure that the JSON is clean, concise, and only includes relevant information.
+
 ---
 
 ### **Common Across Most News Categories**:
@@ -257,45 +131,17 @@ Return **strictly only** a pure JSON object with these fields. Make sure the exp
 
 """
 
-    if 'deepAnalysisJson' not in df.columns:
-        df['deepAnalysisJson'] = None
 
-    exam_specific_df = df[df['examSpecific'] == True]
-    if exam_specific_df.empty:
-        return df
 
-    for idx, row in exam_specific_df.iterrows():
-        article_text = f"{row['title']} {row['involvement']} {row['past']} {row['present']}".strip()
-        final_prompt = detailed_prompt_intro + article_text
 
-        payload = {
-            "contents": [{"parts": [{"text": final_prompt}]}]
-        }
 
-        response = requests.post(GEMINI_API_URL, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
 
-        if response.status_code != 200:
-            df.at[idx, 'deepAnalysisJson'] = "{}"
-            continue
-
-        try:
-            response_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-            df.at[idx, 'deepAnalysisJson'] = response_text
-        except Exception:
-            df.at[idx, 'deepAnalysisJson'] = "{}"
-
-    return df
-
-def generate_summary_points(df, api_key):
-    GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-
-    summary_prompt_intro = """Given the following article, generate:
+"""Given the following article, generate:
 Imagine preparing for UPSC. The AI should provide a concise yet detailed summary that explains key concepts clearly and links them to current affairs, real-world examples, and interlinkages between subjects. The goal is to help aspirants understand the core concepts, connect theory with practice, and offer actionable insights for effective preparation.
 - A **short summary** (3-5 lines)
 - **5 important key points**
 
 Return the result as a pure JSON like:
-NOTE: If any section in the response is not relevant to the article or topic being summarized, or if the information is not available, simply remove that section from the final JSON output. Do not include empty or irrelevant sections. Ensure that the JSON is clean, concise, and only includes relevant information.
 NOTE : The higlight words can have in middle of the texts or points also whereever you feel that is important need to highlight it them please ensure highligh in same formate so that i can easily fetch it and highlight it in frontend 
 {
   "Key Actors": [
@@ -343,50 +189,3 @@ NOTE : The higlight words can have in middle of the texts or points also whereev
 }
 
 Strictly JSON format only.\n\n"""
-
-    if 'summaryPointsJson' not in df.columns:
-        df['summaryPointsJson'] = None
-
-    for idx, row in df.iterrows():
-        article_text = f"{row['title']} {row['involvement']} {row['past']} {row['present']}".strip()
-        final_prompt = summary_prompt_intro + article_text
-
-        payload = {
-            "contents": [{"parts": [{"text": final_prompt}]}]
-        }
-
-        response = requests.post(GEMINI_API_URL, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
-
-        if response.status_code != 200:
-            df.at[idx, 'summaryPointsJson'] = "{}"
-            continue
-
-        try:
-            response_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-            df.at[idx, 'summaryPointsJson'] = response_text
-        except Exception:
-            df.at[idx, 'summaryPointsJson'] = "{}"
-
-    return df
-
-@app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
-    try:
-        df = pd.read_csv(file.file)
-        df = process_csv_and_predict(df)
-        df = reclassify_general_and_predict_exam_specific(df, get_api_key())
-        df = deep_analysis_for_exam_specific(df, get_api_key())  # Only if examSpecific is True
-        df = generate_summary_points(df, get_api_key())
-
-        output_path = "final_tagged_articles.csv"
-        df.to_csv(output_path, index=False)
-        return {"message": "✅ File processed successfully. Download using /download"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.get("/download/")
-async def download_file():
-    file_path = "final_tagged_articles.csv"
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path=file_path, filename="final_tagged_articles.csv", media_type="text/csv")
